@@ -54,3 +54,19 @@ go build
 ```
 
 The application will now serve your `index.html` and all other assets from the `static` directory, completely from within the executable.
+
+## Windows Builds: with or without console
+
+On Windows, you can choose whether the app shows a console window.
+
+- With console (default):
+```powershell
+# Shows console window (useful for logs)
+go build
+```
+
+- Without console (hide console window):
+```powershell
+# Build a GUI executable without a console window
+go build -ldflags "-H=windowsgui"
+```
