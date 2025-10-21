@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 )
 
 // API handler
@@ -17,9 +18,15 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle POST requests to /api/convertFileSrc path
-	if r.URL.Path == "/api/convertFileSrc" && r.Method == http.MethodPost {
+	// Handle POST requests to /api/core/convertFileSrc path
+	if r.URL.Path == "/api/core/convertFileSrc" && r.Method == http.MethodPost {
 		handleConvertFileSrcRequest(w, r)
+		return
+	}
+
+	// Handle POST requests to /api/core/getArgs path
+	if r.URL.Path == "/api/core/getArgs" && r.Method == http.MethodGet {
+		handleGetArgsRequest(w, r)
 		return
 	}
 
@@ -72,5 +79,25 @@ func handleConvertFileSrcRequest(w http.ResponseWriter, r *http.Request) {
 	newSrc := convertFileSrc(payload.FilePath)
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"newSrc": newSrc})
+	json.NewEncoder(w).Encode(newSrc)
+}
+
+// handleGetArgsRequest returns the command-line arguments passed to the application.
+func handleGetArgsRequest(w http.ResponseWriter, r *http.Request) {
+	var args []string
+	if staticMode {
+		// In static mode, all arguments after the executable are returned
+		args = os.Args[1:]
+	} else {
+		// In local mode, the first argument is the file path, so we return the rest
+		if len(os.Args) > 2 {
+			args = os.Args[2:]
+		} else {
+			args = []string{}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(args)
 }

@@ -43,6 +43,8 @@ func createListener() (net.Listener, error) {
 func main() {
 	log.Printf("Development mode: %v", IsDev)
 
+	fileName := ""
+
 	// Check if static/index.html exists and set staticMode
 	if _, err := staticFS.Open("static/index.html"); err == nil {
 		staticMode = true
@@ -80,6 +82,8 @@ func main() {
 			if _, err := os.Stat(htmlFilePath); err != nil {
 				log.Fatalf("❌ Error: index.html not found in directory: %v", err)
 			}
+		}else{
+			fileName = info.Name()
 		}
 
 		absPath, err := filepath.Abs(htmlFilePath)
@@ -180,7 +184,7 @@ func main() {
 	}
 
 	// Open in Chrome app mode
-	url := fmt.Sprintf("http://localhost:%d/app/", port)
+	url := fmt.Sprintf("http://localhost:%d/app/%s", port, fileName)
 	cmd, err := openChromeAppMode(url, tempDir, windowSizeArg)
 	if err != nil {
 		log.Printf("⚠️ Failed to run Chrome app mode: %v", err)

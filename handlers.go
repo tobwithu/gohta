@@ -14,13 +14,13 @@ import (
 )
 
 // addScriptNode is a helper function to inject a script tag into an HTML node.
-func addScriptNode(n *html.Node, src string) {
+func addScriptNode(n *html.Node, src string, isDefer bool) {
 	scriptNode := &html.Node{
 		Type: html.ElementNode,
 		Data: "script",
 		Attr: []html.Attribute{
 			{Key: "src", Val: src},
-			{Key: "defer", Val: ""},
+			ternary(isDefer, html.Attribute{Key: "defer", Val: ""}, html.Attribute{}),
 		},
 	}
 	n.AppendChild(scriptNode)
@@ -81,9 +81,9 @@ func htmlHandler() http.HandlerFunc {
 			var findHeadAndInject func(*html.Node)
 			findHeadAndInject = func(n *html.Node) {
 				if n.Type == html.ElementNode && n.Data == "head" {
-					addScriptNode(n, "/embed/gohta.js")
+					addScriptNode(n, "/embed/gohta.js", false)
 					if IsDev {
-						addScriptNode(n, "/embed/development.js")
+						addScriptNode(n, "/embed/development.js", true)
 					}
 					return
 				}
