@@ -1,5 +1,8 @@
-# gohta
+# Gohta
 Revived HTA with Go and Chrome
+
+Build desktop-like apps easily from HTML, similar to HTA.
+When you need more capability, extend it with Go.
 
 ## Development Mode
 
