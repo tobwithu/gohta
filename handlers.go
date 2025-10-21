@@ -26,95 +26,99 @@ func addScriptNode(n *html.Node, src string) {
 	n.AppendChild(scriptNode)
 }
 
-// htmlHandler serves the main page at /app and other static files.
-func htmlHandler(rootDir string) http.HandlerFunc {
+// htmlHandler serves static files and processes HTML files for script injection.
+func htmlHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Serve content under the /app prefix
-		if strings.HasPrefix(r.URL.Path, "/app") {
-			// Trim the /app prefix to get the relative path
-			relativePath := strings.TrimPrefix(r.URL.Path, "/app")
-			requestedPath := filepath.Join(rootDir, relativePath)
-
-			info, err := os.Stat(requestedPath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					http.NotFound(w, r)
-				} else {
-					http.Error(w, "Server error", http.StatusInternalServerError)
-					log.Printf("Error stating file %s: %v", requestedPath, err)
-				}
-				return
+		// Handle routes outside of /app
+		if !strings.HasPrefix(r.URL.Path, "/app") {
+			if r.URL.Path == "/" {
+				http.Redirect(w, r, "/app/", http.StatusFound)
+			} else {
+				http.NotFound(w, r)
 			}
+			return
+		}
 
-			// If it's a directory, look for index.html
-			if info.IsDir() {
+		// Get the relative path of the requested file
+		relativePath := strings.TrimPrefix(r.URL.Path, "/app")
+		relativePath = strings.TrimPrefix(relativePath, "/")
+
+		safePath := relativePath
+		if safePath == "" {
+			safePath = "."
+		}
+		// Check if the path is a directory and handle redirects/index.html
+		file, err := contentFS.Open(safePath)
+		if err == nil {
+			info, err := file.Stat()
+			if err == nil && info.IsDir() {
 				if !strings.HasSuffix(r.URL.Path, "/") {
 					http.Redirect(w, r, r.URL.Path+"/", http.StatusFound)
+					file.Close()
 					return
 				}
-				requestedPath = filepath.Join(requestedPath, "index.html")
+				relativePath = filepath.Join(relativePath, "index.html")
 			}
+			file.Close()
+		}
 
-			// Check if the file is an HTML file
-			if strings.HasSuffix(strings.ToLower(requestedPath), ".html") {
-				content, err := os.ReadFile(requestedPath)
-				if err != nil {
-					http.NotFound(w, r)
-					log.Printf("File not found (or index.html missing): %s", requestedPath)
-					return
-				}
-
-				doc, err := html.Parse(strings.NewReader(string(content)))
-				if err != nil {
-					http.Error(w, "Could not parse HTML", http.StatusInternalServerError)
-					log.Printf("Error parsing HTML from %s: %v", requestedPath, err)
-					return
-				}
-
-				// Find head tag and inject script node
-				var findHeadAndInject func(*html.Node)
-				findHeadAndInject = func(n *html.Node) {
-					if n.Type == html.ElementNode && n.Data == "head" {
-						addScriptNode(n, "/embed/gohta.js")
-						if IsDev {
-							addScriptNode(n, "/embed/development.js")
-						}
-					}
-
-					for c := n.FirstChild; c != nil; c = c.NextSibling {
-						findHeadAndInject(c)
-					}
-				}
-				findHeadAndInject(doc)
-
-				// Process image files: convert file:// paths to server URLs and embed relative paths as Base64
-				processImageTags(doc, rootDir)
-
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				html.Render(w, doc)
+		// If it's an HTML file, process it
+		if strings.HasSuffix(strings.ToLower(relativePath), ".html") {
+			content, err := readFile(relativePath)
+			if err != nil {
+				http.NotFound(w, r)
+				log.Printf("File not found: %s", relativePath)
 				return
 			}
 
-			// Serve non-HTML files as static assets
-			http.ServeFile(w, r, requestedPath)
+			doc, err := html.Parse(strings.NewReader(string(content)))
+			if err != nil {
+				http.Error(w, "Could not parse HTML", http.StatusInternalServerError)
+				log.Printf("Error parsing HTML from %s: %v", relativePath, err)
+				return
+			}
+
+			var findHeadAndInject func(*html.Node)
+			findHeadAndInject = func(n *html.Node) {
+				if n.Type == html.ElementNode && n.Data == "head" {
+					addScriptNode(n, "/embed/gohta.js")
+					if IsDev {
+						addScriptNode(n, "/embed/development.js")
+					}
+					return
+				}
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					findHeadAndInject(c)
+				}
+			}
+			findHeadAndInject(doc)
+
+			processImageTags(doc)
+
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			html.Render(w, doc)
 			return
 		}
 
-		// Redirect root to /app
-		if r.URL.Path == "/" {
-			http.Redirect(w, r, "/app", http.StatusFound)
-			return
-		}
-
-		// For any other path, return a 404
-		http.NotFound(w, r)
+		// For everything else, serve it as a static file
+		r.URL.Path = relativePath // Temporarily rewrite the path for the static server
+		staticServer.ServeHTTP(w, r)
 	}
+}
+
+func readFile(path string) ([]byte, error) {
+	contentPath := filepath.Join(rootDir, path)
+	if staticMode {		
+		contentPath = strings.ReplaceAll(contentPath, "\\", "/")
+		return staticFS.ReadFile(contentPath)
+	}
+	return os.ReadFile(contentPath)
 }
 
 // processImageTags traverses HTML nodes and processes src attributes of img tags.
 // file:// paths are changed to URLs served by the server,
 // and relative path images are converted to Base64 data URIs and embedded in HTML.
-func processImageTags(n *html.Node, baseDir string) {
+func processImageTags(n *html.Node) {
 	if n.Type == html.ElementNode && n.Data == "img" {
 		for i, attr := range n.Attr {
 			if attr.Key == "src" {
@@ -124,10 +128,9 @@ func processImageTags(n *html.Node, baseDir string) {
 					n.Attr[i].Val = convertFileSrc(src)
 				} else if !strings.HasPrefix(src, "data:") && !strings.HasPrefix(src, "http") {
 					// Embed relative path images by encoding them as Base64
-					imagePath := filepath.Join(baseDir, src)
-					imageData, err := os.ReadFile(imagePath)
+					imageData, err := readFile(src)
 					if err != nil {
-						log.Printf("⚠️  Could not read image file for embedding %s: %v", imagePath, err)
+						log.Printf("⚠️  Could not read image file for embedding %s: %v", src, err)
 						continue // Skip to next attribute if file cannot be read
 					}
 
@@ -143,7 +146,7 @@ func processImageTags(n *html.Node, baseDir string) {
 	}
 
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		processImageTags(c, baseDir)
+		processImageTags(c)
 	}
 }
 

@@ -20,8 +20,18 @@ import (
 
 const showLog = true
 
+var staticMode = false
+
 //go:embed embed
 var embeddedFS embed.FS
+
+//go:embed static/**
+var staticFS embed.FS
+
+var contentFS fs.FS
+var handlerFS http.FileSystem
+var rootDir string
+var staticServer http.Handler
 
 // createListener creates a listener on an available port
 func createListener() (net.Listener, error) {
@@ -31,34 +41,66 @@ func createListener() (net.Listener, error) {
 func main() {
 	log.Printf("Development mode: %v", IsDev)
 
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: gohta <path-to-html-file>")
-		fmt.Println("Please provide the path to an HTML file.")
-		return
+	// Check if static/index.html exists and set staticMode
+	if _, err := staticFS.Open("static/index.html"); err == nil {
+		staticMode = true
+		log.Println("💡 Found static/index.html. Serving from embedded static assets.")
 	}
-	htmlFilePath := os.Args[1]
 
-	info, err := os.Stat(htmlFilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Fatalf("❌ Error: Input path does not exist: %s", htmlFilePath)
+	var htmlFilePath string
+	if !staticMode {
+		if len(os.Args) < 2 {
+			fmt.Println("Usage: gohta <path-to-html-file-or-directory>")
+			return
 		}
-		log.Fatalf("❌ Error checking input path: %v", err)
+		htmlFilePath = os.Args[1]
 	}
 
-	if info.IsDir() {
-		htmlFilePath = filepath.Join(htmlFilePath, "index.html")
-		if _, err := os.Stat(htmlFilePath); err != nil {
-			log.Fatalf("❌ Error: index.html not found in directory: %v", err)
+	if staticMode {
+		rootDir = "static"
+		subFS, err := fs.Sub(staticFS, rootDir)
+		if err != nil {
+			log.Fatalf("❌ Failed to create sub-filesystem for static assets: %v", err)
 		}
-	}
+		contentFS = subFS
+		handlerFS = http.FS(subFS)
+	} else {
+		info, err := os.Stat(htmlFilePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				log.Fatalf("❌ Error: Input path does not exist: %s", htmlFilePath)
+			}
+			log.Fatalf("❌ Error checking input path: %v", err)
+		}
 
-	content, err := os.ReadFile(htmlFilePath)
+		if info.IsDir() {
+			htmlFilePath = filepath.Join(htmlFilePath, "index.html")
+			if _, err := os.Stat(htmlFilePath); err != nil {
+				log.Fatalf("❌ Error: index.html not found in directory: %v", err)
+			}
+		}
+
+		absPath, err := filepath.Abs(htmlFilePath)
+		if err != nil {
+			log.Fatalf("❌ Error getting absolute path for file: %v", err)
+		}
+		rootDir = filepath.Dir(absPath)
+		contentFS = os.DirFS(rootDir)
+		handlerFS = http.Dir(rootDir)
+	}
+	staticServer = http.FileServer(handlerFS)
+
+	var windowSizeArg string
+	var content []byte
+	var err error
+	if staticMode {
+		content, err = staticFS.ReadFile("static/index.html")
+	} else {
+		content, err = os.ReadFile(htmlFilePath)
+	}
 	if err != nil {
 		log.Fatalf("❌ Error reading file for window size check: %v", err)
 	}
-
-	var windowSizeArg string
 	width, height := findGohtaOptions(string(content))
 	if width != "" && height != "" {
 		windowSizeArg = fmt.Sprintf("--window-size=%s,%s", width, height)
@@ -71,29 +113,12 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	var htmlFileDir string
-	absPath, err := filepath.Abs(htmlFilePath)
-	if err != nil {
-		log.Fatalf("❌ Error getting absolute path for file: %v", err)
-	}
-	htmlFileDir = filepath.Dir(absPath)
-
-	// Create listener on available port
-	listener, err := createListener()
-	if err != nil {
-		log.Fatalf("❌ Error creating listener: %v", err)
-	}
-	defer listener.Close()
-
-	// Extract port number
-	addr := listener.Addr().(*net.TCPAddr)
-	port := addr.Port
-
 	// Register routes
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, filepath.Join(htmlFileDir, "favicon.ico"))
+		staticServer.ServeHTTP(w, r)
+		//http.ServeFile(w, r, filepath.Join(rootDir, "favicon.ico"))
 	})
-	mux.HandleFunc("/", htmlHandler(htmlFileDir))
+	mux.HandleFunc("/", htmlHandler())
 	mux.HandleFunc("/api/", apiHandler)
 	mux.HandleFunc("/file/", fileHandler)
 
@@ -106,8 +131,19 @@ func main() {
 
 	// Initialize development mode if enabled
 	if IsDev {
-		initDevMode(mux, htmlFileDir)
+		initDevMode(mux, rootDir)
 	}
+
+	// Create listener on available port
+	listener, err := createListener()
+	if err != nil {
+		log.Fatalf("❌ Error creating listener: %v", err)
+	}
+	defer listener.Close()
+
+	// Extract port number
+	addr := listener.Addr().(*net.TCPAddr)
+	port := addr.Port
 
 	// Configure server to only accept localhost connections
 	server := &http.Server{
@@ -142,7 +178,7 @@ func main() {
 	}
 
 	// Open in Chrome app mode
-	url := fmt.Sprintf("http://localhost:%d/app", port)
+	url := fmt.Sprintf("http://localhost:%d/app/", port)
 	cmd, err := openChromeAppMode(url, tempDir, windowSizeArg)
 	if err != nil {
 		log.Printf("⚠️ Failed to run Chrome app mode: %v", err)
