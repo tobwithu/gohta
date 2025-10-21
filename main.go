@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/html"
@@ -189,6 +191,22 @@ func main() {
 		fmt.Println("🌐 Browser opened in Chrome app mode!")
 		fmt.Println("💡 Server will automatically close when browser window is closed.")
 	}
+
+	// Set up a channel to listen for OS signals
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	// Start a goroutine to handle cleanup on shutdown
+	go func() {
+		<-c
+		log.Println("🔌 Interrupt signal received. Shutting down...")
+		if cmd != nil && cmd.Process != nil {
+			if err := cmd.Process.Kill(); err != nil {
+				log.Printf("❌ Failed to kill Chrome process: %v", err)
+			}
+		}
+		os.Exit(0)
+	}()
 
 	// Wait for browser process to exit
 	if err := cmd.Wait(); err != nil {
